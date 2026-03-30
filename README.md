@@ -77,10 +77,9 @@ pip install imageio-ffmpeg
 # Add C:\ffmpeg\bin to your Windows PATH
 ```
 
-### Step 4 — Create OAuth Credentials (Recommended)
+### Step 4 — Create Credentials
 
-OAuth authentication uses your personal Google Drive quota (no storage limits).
-
+**For Local Use (Recommended): OAuth**
 1. Go to https://console.cloud.google.com/
 2. Select your project
 3. **APIs & Services → Library** — enable:
@@ -93,10 +92,25 @@ OAuth authentication uses your personal Google Drive quota (no storage limits).
 5. Download the JSON file and save it as `auth.json` in this project folder
 6. **IMPORTANT**: Add `http://localhost:8080/` to Authorized redirect URIs
 
+**For GitHub Actions (Required): Service Account**
+1. Go to https://console.cloud.google.com/
+2. Select your project
+3. **APIs & Services → Credentials → + Create Credentials → Service Account**
+   - Name: `video-processor-github`
+   - Role: `Editor`
+   - Click Done
+4. Click the service account → **Keys tab → Add Key → JSON**
+5. Download the JSON file — this is what you'll put in GitHub Secrets
+
 ### Step 5 — Share Sheet and Drive
 
+**For OAuth (local use):**
 Open `auth.json` and find `"client_email"` — copy that email address.
 
+**For Service Account (GitHub Actions):**
+Open your service account JSON file and find `"client_email"` — copy that email address.
+
+Then:
 - Open your **Google Sheet** → Share → paste email → Editor → Send
 - Open your **Drive folder** → Right-click → Share → paste email → Editor → Done
 
@@ -192,7 +206,10 @@ Go to: **GitHub → Your Repo → Settings → Secrets and variables → Actions
 
 Add these secrets:
 - `SPREADSHEET_ID` — Your Google Sheet ID
-- `GOOGLE_CREDENTIALS` — Full contents of `auth.json`
+- `GOOGLE_CREDENTIALS` — Full contents of **service account JSON** (NOT OAuth auth.json)
+- `GOOGLE_DRIVE_FOLDER_ID` — Your Drive folder ID
+
+**IMPORTANT**: Use the service account JSON file for GitHub Actions, not the OAuth auth.json file.
 
 ### Schedule
 

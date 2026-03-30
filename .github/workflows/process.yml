@@ -109,10 +109,10 @@ jobs:
           ffprobe -version | head -1
           echo "✅ FFmpeg ready"
 
-      - name: 🔐 Write OAuth credentials from secret
+      - name: 🔐 Write service account credentials from secret
         run: |
-          echo '${{ secrets.GOOGLE_CREDENTIALS }}' > auth.json
-          echo "✅ auth.json ready ($(wc -c < auth.json) bytes)"
+          echo '${{ secrets.GOOGLE_CREDENTIALS }}' > credentials.json
+          echo "✅ credentials.json ready ($(wc -c < credentials.json) bytes)"
 
       - name: ⚙️ Write .env config
         run: |
@@ -169,7 +169,7 @@ jobs:
 
       - name: 🧹 Clean up secrets
         if: always()
-        run: rm -f auth.json .env
+        run: rm -f credentials.json .env
 
       - name: 📊 Summary
         if: always()
