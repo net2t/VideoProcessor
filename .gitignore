@@ -20,6 +20,9 @@ downloads/
 *.avi
 *.webm
 
+# Backup files
+*.backup
+
 # Log files (auto-generated)
 logs/
 

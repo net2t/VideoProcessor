@@ -1,6 +1,6 @@
 # 🎬 VideoProcessor
 
-Automatic post-processor for **Bright Little Stories** videos.
+Automatic post-processor for **Bright Little Stories** videos with logo overlay, trimming, and custom endscreen.
 
 Works **two ways** — same script, same settings:
 
@@ -13,10 +13,13 @@ Works **two ways** — same script, same settings:
 
 ## What It Does to Each Video
 
-1. **Logo overlay** — places `logo.png` on the top-left corner of the video to cover the MagicLight.AI watermark
-2. **Trim end** — cuts the last N seconds (default: 4) to remove the MagicLight outro
-3. **Upload to Drive** — uploads the processed video to your Google Drive folder (mirrors the same subfolder structure)
-4. **Update Sheet** — sets Status → `Processed` and writes the Drive URL to column O
+1. **Logo overlay** — Places logo on top-left corner to cover the MagicLight.AI watermark
+2. **Trim end** — Cuts the last N seconds (default: 4) to remove the MagicLight outro
+3. **Add endscreen** — Appends your custom endscreen video (auto-detected duration)
+4. **Crossfade** — Smooth transition between main video and endscreen
+5. **Upload to Drive** — Uploads processed video to Google Drive folder
+6. **Local copy** — Saves processed video locally before upload
+7. **Update Sheet** — Sets Status → `Processed` and writes Drive URL to column O (cloud mode)
 
 ---
 
@@ -25,36 +28,19 @@ Works **two ways** — same script, same settings:
 ```
 VideoProcessor/
 ├── process.py                   ← Main script (cloud + local)
-├── logo.png                     ← Your sticker that covers the watermark
+├── assets/
+│   ├── logo.png                 ← Your watermark cover logo
+│   └── endscreen.mp4           ← Your custom endscreen video
 ├── .env                         ← Your config (never commit this)
 ├── .env.example                 ← Template — copy to .env
-├── credentials.json             ← Service Account key (never commit this)
+├── auth.json                   ← OAuth credentials (never commit this)
 ├── requirements.txt             ← Python packages
 ├── .gitignore
-├── logs/                        ← Auto-created — one log file per run
-│   └── process_20260328_130000.log
 ├── downloads/                   ← Default local scan folder (auto-created)
 └── .github/
     └── workflows/
-        └── process.yml          ← GitHub Actions trigger
+        └── process.yml          ← GitHub Actions with manual options
 ```
-
----
-
-## Google Sheet — Required Column O
-
-Add a header `Processed Video URL` to **column O** of your sheet.
-
-| Col | Header |
-|-----|--------|
-| A | Theme |
-| B | Title |
-| ... | ... |
-| G | Status |
-| H | Magic Thumbnail |
-| ... | ... |
-| N | Project URL |
-| **O** | **Processed Video URL** ← add this |
 
 ---
 
@@ -91,25 +77,25 @@ pip install imageio-ffmpeg
 # Add C:\ffmpeg\bin to your Windows PATH
 ```
 
-### Step 4 — Create a Service Account (Google Cloud)
+### Step 4 — Create OAuth Credentials (Recommended)
 
-A Service Account lets the script access Drive and Sheets without a browser login.
+OAuth authentication uses your personal Google Drive quota (no storage limits).
 
 1. Go to https://console.cloud.google.com/
-2. Select your project (same as AutoMagicAI)
+2. Select your project
 3. **APIs & Services → Library** — enable:
    - ✅ Google Drive API
    - ✅ Google Sheets API
-4. **APIs & Services → Credentials → + Create Credentials → Service Account**
+4. **APIs & Services → Credentials → + Create Credentials → OAuth 2.0 Client ID**
+   - Application type: Desktop app
    - Name: `video-processor`
-   - Role: `Editor`
-   - Click Done
-5. Click the service account → **Keys tab → Add Key → JSON**
-6. Save the downloaded file as `credentials.json` in this project folder
+   - Click Create
+5. Download the JSON file and save it as `auth.json` in this project folder
+6. **IMPORTANT**: Add `http://localhost:8080/` to Authorized redirect URIs
 
-### Step 5 — Share Sheet and Drive with the Service Account
+### Step 5 — Share Sheet and Drive
 
-Open `credentials.json` and find `"client_email"` — copy that email address.
+Open `auth.json` and find `"client_email"` — copy that email address.
 
 - Open your **Google Sheet** → Share → paste email → Editor → Send
 - Open your **Drive folder** → Right-click → Share → paste email → Editor → Done
@@ -124,22 +110,11 @@ cp .env.example .env       # Mac/Linux
 # Edit .env and fill in your values
 ```
 
-Minimum required settings:
-```ini
-SPREADSHEET_ID=your_sheet_id_here
-GOOGLE_DRIVE_FOLDER_ID=your_folder_id_here
-TRIM_SECONDS=4
-LOGO_PATH=logo.png
-LOGO_X=10
-LOGO_Y=10
-LOGO_WIDTH=120
-```
+### Step 7 — Add Assets
 
-### Step 7 — Add logo.png
-
-Place your `logo.png` sticker file in the same folder as `process.py`.
-
-This is the image that will be overlaid on the top-left corner to cover the MagicLight watermark. Make it approximately the same size as the watermark.
+Create an `assets/` folder and add:
+- `assets/logo.png` — Your logo to cover the watermark (300px width recommended)
+- `assets/endscreen.mp4` — Your endscreen video (5-10 seconds)
 
 ### Step 8 — Add column O to your Sheet
 
@@ -147,143 +122,130 @@ Open your Google Sheet → click cell O1 → type `Processed Video URL`
 
 ---
 
+## Configuration (.env)
+
+```ini
+# Google Sheet ID (from Sheet URL)
+SPREADSHEET_ID=your_sheet_id_here
+
+# Google Drive Folder ID (from folder URL)
+GOOGLE_DRIVE_FOLDER_ID=your_folder_id_here
+
+# Video Processing
+TRIM_SECONDS=4
+
+# Logo Settings
+LOGO_PATH=assets/logo.png
+LOGO_X=7
+LOGO_Y=5
+LOGO_WIDTH=300
+LOGO_OPACITY=1.0
+
+# Endscreen Settings
+ENDSCREEN_ENABLED=true
+ENDSCREEN_VIDEO=assets/endscreen.mp4
+ENDSCREEN_DURATION=auto
+
+# Local Mode Settings
+INPUT_FOLDER=E:\Pythons\VideoProcessor\downloads
+OUTPUT_FOLDER=E:\Pythons\VideoProcessor\Done
+```
+
+---
+
 ## Running Locally (PC)
 
-### Cloud mode (reads from Sheet + Drive)
 ```bash
-python process.py --mode cloud
-```
-
-### Local mode (scans downloads/ folder)
-```bash
+# Local mode (scans INPUT_FOLDER)
 python process.py --mode local
-```
 
-### Auto-detect mode (default — no --mode needed)
-```bash
-# If SPREADSHEET_ID is set in .env → runs cloud mode
-# If not → runs local mode
+# Cloud mode (reads from Sheet + Drive)
+python process.py --mode cloud
+
+# Auto-detect mode (default)
 python process.py
-```
 
-### Dry run (preview only — no changes)
-```bash
+# Dry run (preview only)
 python process.py --dry-run
-```
 
-### Limit number of videos
-```bash
+# Limit number of videos
 python process.py --max 3
 ```
 
-### Local mode — custom folder
-Set `INPUT_FOLDER` in your `.env`:
-```ini
-INPUT_FOLDER=C:\Users\NADEEM\Downloads
-```
-Or put videos in the `downloads/` folder next to `process.py` — it auto-scans there.
-
 ---
 
-## Setting Up GitHub Actions (Cloud)
+## GitHub Actions (Cloud)
 
-### Step 1 — Add GitHub Secrets
+### Manual Run Options
+
+The workflow includes manual inputs for:
+- Logo X/Y position
+- Logo width
+- Trim seconds
+- Endscreen enable/disable
+- Endscreen duration
+- Dry run option
+
+### Setup GitHub Secrets
 
 Go to: **GitHub → Your Repo → Settings → Secrets and variables → Actions**
 
-Add these 3 secrets:
-
-| Secret Name | Value |
-|-------------|-------|
-| `SPREADSHEET_ID` | Your Google Sheet ID (from Sheet URL) |
-| `GOOGLE_CREDENTIALS` | Full contents of `credentials.json` (open in Notepad, select all, copy) |
-| `GOOGLE_DRIVE_FOLDER_ID` | Your Drive folder ID (from folder URL) |
-
-### Step 2 — Push your files to GitHub
-
-Make sure these files are in your repo:
-- `process.py`
-- `logo.png`
-- `requirements.txt`
-- `.github/workflows/process.yml`
-
-**Do NOT push:** `.env`, `credentials.json` (they are in .gitignore)
-
-### Step 3 — Test with dry run
-
-1. Go to: **GitHub → Actions tab → 🎬 Process Videos**
-2. Click **Run workflow**
-3. Set **Dry run** = `true`
-4. Click green **Run workflow** button
-5. Watch the logs — you should see rows listed
-
-### Step 4 — Run for real
-
-Same steps but set **Dry run** = `false`
+Add these secrets:
+- `SPREADSHEET_ID` — Your Google Sheet ID
+- `GOOGLE_CREDENTIALS` — Full contents of `auth.json`
 
 ### Schedule
 
-Default: every day at **1:00 PM Pakistan time** (08:00 UTC).
-
-To change, edit `.github/workflows/process.yml`:
-```yaml
-- cron: "0 8 * * *"   # 1:00 PM Pakistan
-- cron: "0 3 * * *"   # 8:00 AM Pakistan
-- cron: "0 15 * * *"  # 8:00 PM Pakistan
-```
-
-Pakistan = UTC + 5. So for 2 PM Pakistan → 9:00 UTC → `"0 9 * * *"`
+Default: Daily at 1:00 PM Pakistan time (08:00 UTC).
 
 ---
 
-## Status Flow
+## Features
 
-```
-AutoMagicAI (your PC)          VideoProcessor (GitHub Actions)
-─────────────────────          ──────────────────────────────
-Generated                      
-    ↓
-  Pending  (project URL saved)
-    ↓
-  Done     (video on Drive)  ──→  Processed  (logo + trimmed)
-```
+### ✨ **Smart Authentication**
+- OAuth with personal Google Account (recommended)
+- No storage quota limits
+- Automatic token refresh
 
----
+### 🎨 **Logo Overlay**
+- Customizable position and size
+- Opacity control
+- Covers MagicLight watermark completely
 
-## Log Files
+### ✂️ **Smart Trimming**
+- Removes MagicLight outro
+- Configurable duration
+- Preserves main content
 
-Every run creates a log file in `logs/`:
-```
-logs/
-├── process_20260328_130000.log
-├── process_20260329_080012.log
-└── process_20260330_080005.log
-```
+### 🎬 **Dynamic Endscreen**
+- Auto-detects video duration
+- Supports any length (5s, 7s, etc.)
+- Smooth crossfade transition
 
-Log files contain timestamps, progress, and any errors. Check them if something goes wrong.
+### 📁 **Dual Output**
+- Local copy for backup
+- Google Drive upload for sharing
+- Maintains folder structure
 
 ---
 
 ## Troubleshooting
 
-**`No credentials found`**
-→ `credentials.json` is missing. Follow Step 4 above.
+**OAuth redirect error**
+→ Add `http://localhost:8080/` to Authorized redirect URIs in Google Cloud Console
 
-**`Permission denied` on Drive**
-→ You forgot to share the Drive folder with the service account email. Follow Step 5.
+**No credentials found**
+→ Place `auth.json` in project folder
 
-**`Logo NOT found`**
-→ `logo.png` is missing from the project folder. Add it.
+**Logo not found**
+→ Check `LOGO_PATH` in .env (should be `assets/logo.png`)
 
-**`No unprocessed videos found`**
-→ In local mode: put videos in the `downloads/` folder.
-   In cloud mode: AutoMagicAI has not set any rows to `Done` yet.
+**Endscreen not found**
+→ Check `ENDSCREEN_VIDEO` in .env (should be `assets/endscreen.mp4`)
 
-**Video has no logo on it**
-→ Logo was not found during processing. Check `LOGO_PATH` in `.env`.
-
-**Video ends too early or too late**
-→ Adjust `TRIM_SECONDS` in `.env` (default: 4).
+**No videos processed**
+→ Local mode: Add videos to INPUT_FOLDER
+→ Cloud mode: Set Sheet rows to Status="Done"
 
 ---
 

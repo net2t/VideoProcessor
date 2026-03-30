@@ -44,6 +44,9 @@ except ImportError:
 try:
     import gspread
     from google.oauth2.service_account import Credentials as SACredentials
+    from google.oauth2.credentials import Credentials as OAuthCredentials
+    from google_auth_oauthlib.flow import InstalledAppFlow
+    from google.auth.transport.requests import Request
     from googleapiclient.discovery import build
     from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload
     import io as _io
@@ -63,6 +66,11 @@ LOGO_X          = int(os.getenv("LOGO_X",              "10"))
 LOGO_Y          = int(os.getenv("LOGO_Y",              "10"))
 LOGO_WIDTH      = int(os.getenv("LOGO_WIDTH",          "120"))
 LOGO_OPACITY    = float(os.getenv("LOGO_OPACITY",      "1.0"))
+
+# ── Endscreen config ─────────────────────────────────────────────────────────
+ENDSCREEN_ENABLED     = os.getenv("ENDSCREEN_ENABLED", "false").lower() == "true"
+ENDSCREEN_VIDEO       = os.getenv("ENDSCREEN_VIDEO",   "endscreen.mp4")
+ENDSCREEN_DURATION    = os.getenv("ENDSCREEN_DURATION", "5")  # Can be "auto" or a number
 
 # ── Local mode config ─────────────────────────────────────────────────────────
 # INPUT_FOLDER  : where to scan for videos on local PC
@@ -91,33 +99,21 @@ COL_PROCESSED   = 15   # O  — Drive URL of processed video  (set by us)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  LOGGING  — writes to console AND to logs/process_YYYYMMDD.log
+#  LOGGING  — console output only (no log files)
 # ══════════════════════════════════════════════════════════════════════════════
 def setup_logging() -> logging.Logger:
     """
-    Set up logging to both console and a daily log file.
-    Log files live in:  logs/process_YYYYMMDD_HHMMSS.log
+    Set up logging to console only (no log files).
     """
-    logs_dir = Path("logs")
-    logs_dir.mkdir(exist_ok=True)
-
-    timestamp  = datetime.now().strftime("%Y%m%d_%H%M%S")
-    log_file   = logs_dir / f"process_{timestamp}.log"
-
-    fmt = "%(asctime)s  %(levelname)-8s  %(message)s"
-    datefmt = "%Y-%m-%d %H:%M:%S"
-
     logging.basicConfig(
         level=logging.INFO,
-        format=fmt,
-        datefmt=datefmt,
+        format="%(asctime)s  %(levelname)-8s  %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
         handlers=[
-            logging.StreamHandler(sys.stdout),           # console
-            logging.FileHandler(log_file, encoding="utf-8"),  # file
-        ]
+            logging.StreamHandler(sys.stdout),           # console only
+        ],
     )
     logger = logging.getLogger("VideoProcessor")
-    logger.info(f"Log file: {log_file.resolve()}")
     return logger
 
 
@@ -125,16 +121,18 @@ log = setup_logging()
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  GOOGLE AUTH
-#  Priority:
+#  AUTHENTICATION
+#    Priority order:
 #    1. GOOGLE_CREDENTIALS env var  (GitHub Actions — full JSON string)
-#    2. credentials.json file       (local PC)
+#    2. credentials.json file       (local PC - service account)
+#    3. auth.json file             (local PC - OAuth)
 # ══════════════════════════════════════════════════════════════════════════════
-def get_credentials() -> "SACredentials":
+def get_credentials():
     if not _GOOGLE_OK:
         log.error("Google libraries not installed. Run: pip install -r requirements.txt")
         sys.exit(1)
 
+    # Try service account first (for GitHub Actions)
     creds_str = os.getenv("GOOGLE_CREDENTIALS", "")
     if creds_str:
         try:
@@ -145,15 +143,60 @@ def get_credentials() -> "SACredentials":
             log.error(f"Auth: failed to parse GOOGLE_CREDENTIALS JSON — {e}")
             sys.exit(1)
 
+    # Try service account file (local PC)
     creds_file = Path("credentials.json")
     if creds_file.exists():
-        log.info("Auth: using credentials.json (local PC)")
+        log.info("Auth: using credentials.json (local PC - service account)")
         return SACredentials.from_service_account_file(str(creds_file), scopes=SCOPES)
+
+    # Try OAuth flow (local PC - solves storage quota issue)
+    auth_file = Path("auth.json")
+    token_file = Path("token.json")
+    
+    if auth_file.exists():
+        creds = None
+        if token_file.exists():
+            try:
+                creds = OAuthCredentials.from_authorized_user_file(str(token_file), SCOPES)
+                log.info("Auth: using existing token.json (OAuth)")
+            except Exception:
+                creds = None
+        
+        # If there are no (valid) credentials available, let the user log in.
+        if not creds or not creds.valid:
+            if creds and creds.expired and creds.refresh_token:
+                try:
+                    creds.refresh(Request())
+                    log.info("Auth: refreshed OAuth token")
+                except Exception as e:
+                    log.warning(f"Auth: token refresh failed — {e}")
+                    creds = None
+            
+            if not creds:
+                try:
+                    flow = InstalledAppFlow.from_client_secrets_file(
+                        str(auth_file), 
+                        SCOPES,
+                        redirect_uri='http://localhost:8080/'
+                    )
+                    creds = flow.run_local_server(port=8080)
+                    log.info("Auth: completed OAuth flow")
+                except Exception as e:
+                    log.error(f"Auth: OAuth flow failed — {e}")
+                    sys.exit(1)
+            
+            # Save the credentials for the next run
+            with open(token_file, 'w') as token:
+                token.write(creds.to_json())
+        
+        return creds
 
     log.error(
         "No credentials found!\n"
-        "  Local PC     → place credentials.json in project folder\n"
-        "  GitHub Actions → add GOOGLE_CREDENTIALS secret"
+        "  Options:\n"
+        "    • Local PC (service account) → place credentials.json in project folder\n"
+        "    • Local PC (OAuth)          → place auth.json in project folder\n"
+        "    • GitHub Actions            → add GOOGLE_CREDENTIALS secret"
     )
     sys.exit(1)
 
@@ -319,6 +362,32 @@ def find_ffmpeg() -> str:
     )
 
 
+def get_video_info(ffmpeg: str, path: Path) -> dict:
+    """Get video information including resolution and duration."""
+    ffprobe = shutil.which("ffprobe") or ffmpeg.replace("ffmpeg", "ffprobe")
+    cmd = [ffprobe, "-v", "quiet", "-print_format", "json", 
+           "-select_streams", "v:0", "-show_entries", 
+           "stream=width,height,duration", str(path)]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        # Fallback to get_duration only
+        try:
+            duration = get_duration(ffmpeg, path)
+            return {"width": 1920, "height": 1080, "duration": duration}
+        except:
+            raise RuntimeError(f"Cannot read video info from {path}")
+    
+    import json as _json
+    info = _json.loads(result.stdout)
+    stream = info.get("streams", [{}])[0]
+    
+    return {
+        "width": int(stream.get("width", 1920)),
+        "height": int(stream.get("height", 1080)),
+        "duration": float(stream.get("duration", 0))
+    }
+
+
 def get_duration(ffmpeg: str, path: Path) -> float:
     """Return video duration in seconds."""
     ffprobe = shutil.which("ffprobe") or ffmpeg.replace("ffmpeg", "ffprobe")
@@ -347,17 +416,42 @@ def run_ffmpeg_process(ffmpeg: str, input_path: Path,
                        output_path: Path, logo: Path,
                        trim_sec: int) -> bool:
     """
-    Single FFmpeg command that does BOTH:
+    Single FFmpeg command that does:
       1. Overlay logo.png at top-left corner  → hides MagicLight watermark
       2. Trim last N seconds from end         → removes MagicLight outro
+      3. Add endscreen (if enabled)          → custom branding/outro
     Returns True on success.
     """
     log.info(f"FFmpeg: getting duration of '{input_path.name}'...")
     try:
-        duration = get_duration(ffmpeg, input_path)
+        input_info = get_video_info(ffmpeg, input_path)
+        duration = input_info["duration"]
+        input_width = input_info["width"]
+        input_height = input_info["height"]
     except Exception as e:
-        log.error(f"FFmpeg: cannot read duration — {e}")
+        log.error(f"FFmpeg: cannot read video info — {e}")
         return False
+
+    # Check if endscreen is enabled and file exists
+    endscreen_path = None
+    endscreen_duration = ENDSCREEN_DURATION
+    if ENDSCREEN_ENABLED:
+        endscreen_path = Path(ENDSCREEN_VIDEO)
+        if not endscreen_path.exists():
+            log.warning(f"FFmpeg: endscreen enabled but file not found at '{endscreen_path}' — skipping endscreen")
+            endscreen_path = None
+        else:
+            # Auto-detect duration if set to "auto"
+            if endscreen_duration == "auto":
+                try:
+                    endscreen_duration = get_duration(ffmpeg, endscreen_path)
+                    log.info(f"FFmpeg: endscreen enabled → auto-detected {endscreen_duration:.1f}s from '{endscreen_path.name}'")
+                except Exception as e:
+                    log.warning(f"FFmpeg: failed to get endscreen duration — {e} — using 5s default")
+                    endscreen_duration = 5
+            else:
+                endscreen_duration = float(endscreen_duration)
+                log.info(f"FFmpeg: endscreen enabled → {endscreen_duration}s from '{endscreen_path.name}'")
 
     end_time = max(1.0, duration - trim_sec)
     log.info(f"FFmpeg: duration={duration:.1f}s  trim={trim_sec}s  "
@@ -365,35 +459,73 @@ def run_ffmpeg_process(ffmpeg: str, input_path: Path,
 
     if not logo.exists():
         log.warning(f"FFmpeg: logo not found at '{logo}' — trim only (no overlay)")
-        cmd = [
-            ffmpeg, "-y", "-hide_banner", "-loglevel", "error",
-            "-i", str(input_path),
-            "-t", str(end_time),
-            "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
-            "-c:a", "aac", "-b:a", "128k",
-            "-pix_fmt", "yuv420p", "-movflags", "+faststart",
-            str(output_path)
-        ]
+        
+        if endscreen_path:
+            # Trim + endscreen (no logo) - simple concat
+            cmd = [
+                ffmpeg, "-y", "-hide_banner", "-loglevel", "error",
+                "-i", str(input_path),
+                "-i", str(endscreen_path),
+                "-filter_complex", f"[0:v]trim=end={end_time},format=yuv420p[v1];[1:v]trim=duration={endscreen_duration},scale={input_width}:{input_height},format=yuv420p[v2];[v1][v2]concat=n=2:v=1:a=0[outv]",
+                "-map", "[outv]",
+                "-map", "0:a?",
+                "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+                "-c:a", "aac", "-b:a", "128k",
+                "-pix_fmt", "yuv420p", "-movflags", "+faststart",
+                str(output_path)
+            ]
+        else:
+            # Trim only (no logo, no endscreen)
+            cmd = [
+                ffmpeg, "-y", "-hide_banner", "-loglevel", "error",
+                "-i", str(input_path),
+                "-t", str(end_time),
+                "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+                "-c:a", "aac", "-b:a", "128k",
+                "-pix_fmt", "yuv420p", "-movflags", "+faststart",
+                str(output_path)
+            ]
     else:
-        # Build logo filter:  scale → opacity (if < 1) → overlay at (X, Y)
-        logo_f = f"[1:v]scale={LOGO_WIDTH}:-1"
-        if LOGO_OPACITY < 1.0:
-            logo_f += f",colorchannelmixer=aa={LOGO_OPACITY:.2f}"
-        logo_f += f"[logo];[0:v][logo]overlay=x={LOGO_X}:y={LOGO_Y}[v]"
+        if endscreen_path:
+            # Logo + trim + endscreen - simple concat
+            logo_f = f"[1:v]scale={LOGO_WIDTH}:-1"
+            if LOGO_OPACITY < 1.0:
+                logo_f += f",colorchannelmixer=aa={LOGO_OPACITY:.2f}"
+            logo_f += f"[logo];[0:v][logo]overlay=x={LOGO_X}:y={LOGO_Y}[v1];[v1]trim=end={end_time},format=yuv420p[v2];[2:v]trim=duration={endscreen_duration},scale={input_width}:{input_height},format=yuv420p[v3];[v2][v3]concat=n=2:v=1:a=0[outv]"
+            
+            cmd = [
+                ffmpeg, "-y", "-hide_banner", "-loglevel", "error",
+                "-i", str(input_path),
+                "-i", str(logo),
+                "-i", str(endscreen_path),
+                "-filter_complex", logo_f,
+                "-map", "[outv]",
+                "-map", "0:a?",
+                "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+                "-c:a", "aac", "-b:a", "128k",
+                "-pix_fmt", "yuv420p", "-movflags", "+faststart",
+                str(output_path)
+            ]
+        else:
+            # Logo + trim (no endscreen)
+            logo_f = f"[1:v]scale={LOGO_WIDTH}:-1"
+            if LOGO_OPACITY < 1.0:
+                logo_f += f",colorchannelmixer=aa={LOGO_OPACITY:.2f}"
+            logo_f += f"[logo];[0:v][logo]overlay=x={LOGO_X}:y={LOGO_Y}[v]"
 
-        cmd = [
-            ffmpeg, "-y", "-hide_banner", "-loglevel", "error",
-            "-i",  str(input_path),
-            "-i",  str(logo),
-            "-t",  str(end_time),
-            "-filter_complex", logo_f,
-            "-map", "[v]",
-            "-map", "0:a?",
-            "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
-            "-c:a", "aac", "-b:a", "128k",
-            "-pix_fmt", "yuv420p", "-movflags", "+faststart",
-            str(output_path)
-        ]
+            cmd = [
+                ffmpeg, "-y", "-hide_banner", "-loglevel", "error",
+                "-i",  str(input_path),
+                "-i",  str(logo),
+                "-t",  str(end_time),
+                "-filter_complex", logo_f,
+                "-map", "[v]",
+                "-map", "0:a?",
+                "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+                "-c:a", "aac", "-b:a", "128k",
+                "-pix_fmt", "yuv420p", "-movflags", "+faststart",
+                str(output_path)
+            ]
 
     log.info(f"FFmpeg: processing '{input_path.name}'...")
     result = subprocess.run(cmd, capture_output=True, text=True)
@@ -581,6 +713,7 @@ def run_local_mode(args, ffmpeg: str, logo: Path):
     svc   = None
     sheet = None
     if _GOOGLE_OK and (os.path.exists("credentials.json") or
+                       os.path.exists("auth.json") or
                        os.getenv("GOOGLE_CREDENTIALS")):
         try:
             creds = get_credentials()
@@ -705,12 +838,18 @@ def main():
 
     # ── Auto-detect mode ──────────────────────────────────────────────────────
     if args.mode is None:
-        if SPREADSHEET_ID and os.getenv("GOOGLE_CREDENTIALS"):
+        has_cloud_creds = bool(os.getenv("GOOGLE_CREDENTIALS"))
+        has_local_creds = os.path.exists("credentials.json") or os.path.exists("auth.json")
+        
+        if SPREADSHEET_ID and has_cloud_creds:
             args.mode = "cloud"
             log.info("Auto-detected mode: cloud (SPREADSHEET_ID + GOOGLE_CREDENTIALS found)")
+        elif SPREADSHEET_ID and has_local_creds:
+            args.mode = "cloud"
+            log.info("Auto-detected mode: cloud (SPREADSHEET_ID + local credentials found)")
         else:
             args.mode = "local"
-            log.info("Auto-detected mode: local (no SPREADSHEET_ID or GOOGLE_CREDENTIALS)")
+            log.info("Auto-detected mode: local (no SPREADSHEET_ID or credentials)")
 
     log.info("=" * 60)
     log.info("  VideoProcessor")
@@ -735,6 +874,19 @@ def main():
         log.info(f"Logo: found → {logo.resolve()}")
     else:
         log.warning(f"Logo NOT found at '{logo}' — will trim only, no watermark cover.")
+
+    # ── Check endscreen ───────────────────────────────────────────────────────
+    if ENDSCREEN_ENABLED:
+        endscreen = Path(ENDSCREEN_VIDEO)
+        if endscreen.exists():
+            if ENDSCREEN_DURATION == "auto":
+                log.info(f"Endscreen: enabled → auto duration from '{endscreen.name}'")
+            else:
+                log.info(f"Endscreen: enabled → {ENDSCREEN_DURATION}s from '{endscreen.name}'")
+        else:
+            log.warning(f"Endscreen enabled but file not found at '{endscreen}' — skipping endscreen")
+    else:
+        log.info("Endscreen: disabled")
 
     # ── Run selected mode ─────────────────────────────────────────────────────
     if args.mode == "cloud":
