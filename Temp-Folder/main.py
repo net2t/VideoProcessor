@@ -12,6 +12,7 @@ import signal
 import argparse
 import requests
 import gspread
+from datetime import datetime
 from oauth2client.service_account import ServiceAccountCredentials
 from playwright.sync_api import sync_playwright, Download
 from google.oauth2.service_account import Credentials as GACredentials
@@ -56,24 +57,28 @@ SHEETS_SCOPES = ["https://spreadsheets.google.com/feeds",
                  "https://www.googleapis.com/auth/drive"]
 DRIVE_SCOPES  = ["https://www.googleapis.com/auth/drive"]
 
+# ── Sheet Names ───────────────────────────────────────────────────────────────
+VIDEO_SHEET_NAME = "VideoData"  # Your main video sheet
+ACCOUNTS_SHEET_NAME = "Accounts"  # Multi-account credentials sheet
+
+# ── Accounts Sheet Columns ─────────────────────────────────────────────────────
+ACCOL_EMAIL      = 1  # A - Email
+ACCOL_PASSWORD   = 2  # B - Password
+ACCOL_STATUS     = 3  # C - Status (Active/Cooldown/Banned)
+ACCOL_DAILY_USE  = 4  # D - Daily Usage (0-5)
+ACCOL_LAST_USED  = 5  # E - Last Used Timestamp
+ACCOL_TOTAL_GEN  = 6  # F - Total Videos Generated
+
 # ── Sheet column indices (1-based) ────────────────────────────────────────────
-# A=Theme  B=Title  C=Story  D=Moral  E=Hashtags  F=Date  G=Status
-# H=MagicThumbnail  I=VideoID  J=Title(gen)  K=Summary  L=Hashtags(gen)
-# M=Notes  N=ProjectURL
-COL_THEME       = 1
-COL_TITLE       = 2
-COL_STORY       = 3
-COL_MORAL       = 4
-COL_HASHTAGS    = 5
-COL_DATE        = 6
-COL_STATUS      = 7
-COL_THUMB_URL   = 8   # H — Magic Thumbnail URL
-COL_VIDEO_ID    = 9   # I — VideoID
-COL_GEN_TITLE   = 10  # J — Generated Title
-COL_SUMMARY     = 11  # K — Summary
-COL_GEN_HASH    = 12  # L — Generated Hashtags
-COL_NOTES       = 13  # M — Notes
-COL_PROJECT_URL = 14  # N — Project URL (NEW)
+COL_TITLE       = 1  # A - Story Title
+COL_STORY       = 2  # B - Story Text
+COL_MORAL       = 3  # C - Moral
+COL_HASHTAGS    = 4  # D - Hashtags
+COL_STATUS      = 5  # E - Status (Generated/Processing/Done)
+COL_THUMB_URL   = 6  # F - Thumbnail URL
+COL_NOTES       = 7  # G - Notes
+COL_PROJECT_URL = 8  # H - Project URL
+COL_PROCESSED   = 9  # I - Processed Video URL
 
 # ── Graceful shutdown ─────────────────────────────────────────────────────────
 shutdown_requested = False
@@ -110,9 +115,19 @@ def get_sheet():
     try:
         creds  = ServiceAccountCredentials.from_json_keyfile_name(CREDS_FILE, SHEETS_SCOPES)
         client = gspread.authorize(creds)
-        return client.open_by_key(SPREADSHEET_ID).sheet1
+        return client.open_by_key(SPREADSHEET_ID).worksheet(VIDEO_SHEET_NAME)
     except Exception as e:
         print(f"[ERROR] Google Sheets: {e}")
+        return None
+
+def get_sheet_service():
+    """Get sheet service for multi-account management"""
+    try:
+        creds  = ServiceAccountCredentials.from_json_keyfile_name(CREDS_FILE, SHEETS_SCOPES)
+        client = gspread.authorize(creds)
+        return client.open_by_key(SPREADSHEET_ID)
+    except Exception as e:
+        print(f"[ERROR] Google Sheets service: {e}")
         return None
 
 
@@ -206,7 +221,7 @@ def clear_cookies():
 
 
 # ── Login ─────────────────────────────────────────────────────────────────────
-def login(page):
+def login(page, email, password):
     print("[Login] Navigating to login page...")
     page.goto("https://magiclight.ai/login/", timeout=60000)
     page.wait_for_load_state("domcontentloaded")
@@ -253,7 +268,7 @@ def login(page):
     email_input = page.locator('input[type="text"], input[type="email"]')
     email_input.first.wait_for(state="visible", timeout=10000)
     email_input.first.click()
-    email_input.first.fill(ML_EMAIL)
+    email_input.first.fill(email)
     time.sleep(0.5)
 
     # Fill Password
@@ -261,7 +276,7 @@ def login(page):
     pwd_input = page.locator('input[type="password"]')
     pwd_input.first.wait_for(state="visible", timeout=10000)
     pwd_input.first.click()
-    pwd_input.first.fill(ML_PASSWORD)
+    pwd_input.first.fill(password)
     time.sleep(0.5)
 
     # Click Continue — it's a <div class="signin-continue">, NOT a <button>
@@ -282,7 +297,6 @@ def login(page):
 
     if "login" in page.url.lower():
         raise Exception("Login failed — still on login page after clicking Continue.")
-
     print(f"[Login] ✓ Success! URL: {page.url}")
 
 
@@ -1229,6 +1243,71 @@ def step4_generate_and_download(page, row_label: str, safe_title: str) -> dict:
     }
 
 
+# ── Multi-Account Management ─────────────────────────────────────────────────────
+def get_next_account(sheet_service, spreadsheet_id):
+    """Get the best account to use based on usage and status"""
+    try:
+        # Get accounts sheet
+        accounts_sheet = sheet_service.worksheet(ACCOUNTS_SHEET_NAME)
+        accounts = accounts_sheet.get_all_records()
+        
+        current_date = datetime.now().strftime("%Y-%m-%d")
+        best_account = None
+        lowest_usage = 999
+        
+        for account in accounts:
+            status = account.get('Status', '').strip()
+            daily_use = int(account.get('Daily Usage', 0))
+            last_used = account.get('Last Used', '').strip()
+            
+            # Skip if not active
+            if status.lower() != 'active':
+                continue
+                
+            # Reset daily usage if it's a new day
+            if last_used != current_date:
+                daily_use = 0
+                
+            # Find account with lowest usage
+            if daily_use < lowest_usage and daily_use < 5:
+                lowest_usage = daily_use
+                best_account = account
+        
+        if best_account:
+            # Update usage for selected account
+            row_num = accounts.index(best_account) + 2  # +2 for header + 1-based
+            accounts_sheet.update_cell(row_num, ACCOL_DAILY_USE, lowest_usage + 1)
+            accounts_sheet.update_cell(row_num, ACCOL_LAST_USED, current_date)
+            
+            return {
+                'email': best_account.get('Email', ''),
+                'password': best_account.get('Password', ''),
+                'row': row_num
+            }
+        else:
+            print("[ERROR] No available accounts found! All accounts have reached daily limit.")
+            return None
+            
+    except Exception as e:
+        print(f"[ERROR] Failed to get account: {e}")
+        return None
+
+def update_account_success(sheet_service, spreadsheet_id, account_row, success=True):
+    """Update account statistics after video generation"""
+    try:
+        accounts_sheet = sheet_service.worksheet(ACCOUNTS_SHEET_NAME)
+        
+        if success:
+            # Increment total generated
+            current_total = int(accounts_sheet.cell(account_row, ACCOL_TOTAL_GEN).value or 0)
+            accounts_sheet.update_cell(account_row, ACCOL_TOTAL_GEN, current_total + 1)
+        else:
+            # Mark as cooldown if failed
+            accounts_sheet.update_cell(account_row, ACCOL_STATUS, 'Cooldown')
+            
+    except Exception as e:
+        print(f"[ERROR] Failed to update account stats: {e}")
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 def main():
     global browser_instance
@@ -1236,46 +1315,17 @@ def main():
     args  = parse_args()
 
     print("=" * 60)
-    print("  AutoMagicAI — Main Menu")
+    print("  AutoMagicAI — Video Generator")
     print("  1: Generate videos (MagicLight.AI automation)")
-    print("  2: Process videos (logo, trim, endscreen)")
     print("=" * 60)
     
-    choice = input("Select an option (1 or 2): ").strip()
-    if choice not in ("1", "2"):
+    choice = input("Select option 1 to continue: ").strip()
+    if choice != "1":
         print("[ERROR] Invalid choice. Exiting.")
         return
 
     raw_limit = input("How many rows to proceed? (Leave blank for default): ").strip()
     limit = int(raw_limit) if raw_limit.isdigit() else (args.maxstory if args.maxstory is not None else STORIES_PER_RUN)
-
-    if choice == "2":
-        try:
-            # Import and run our new VideoProcessor
-            import sys
-            import os
-            # Add the parent directory to path to import VideoProcessor
-            sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-            from process import run_cloud_mode, parse_args as parse_processor_args
-            print("[INFO] Starting VideoProcessor for video editing...")
-            # Create args for VideoProcessor
-            processor_args = parse_processor_args(['--mode', 'cloud'])
-            # Get FFmpeg path
-            import shutil
-            ffmpeg = shutil.which("ffmpeg") or "ffmpeg"
-            # Get logo path
-            from pathlib import Path
-            logo = Path("assets/logo.png")
-            # Run VideoProcessor
-            run_cloud_mode(processor_args, ffmpeg, logo)
-        except ImportError as e:
-            print(f"[ERROR] Could not import VideoProcessor: {e}")
-            print("[INFO] Make sure VideoProcessor is available in parent directory")
-        except Exception as e:
-            print(f"[ERROR] VideoProcessor failed: {e}")
-            import traceback
-            traceback.print_exc()
-        return
 
     # Determine headless mode: CLI args override .env setting
     if args.headless is not None:
@@ -1321,6 +1371,23 @@ def main():
             records.append(record)
     print(f"[Setup] Found {len(records)} rows in sheet.")
 
+    # Get sheet service for multi-account management
+    sheet_service = get_sheet_service()
+    if not sheet_service:
+        print("[ERROR] Could not connect to Google Sheets")
+        return
+
+    # Get next available account
+    account = get_next_account(sheet_service, SPREADSHEET_ID)
+    if not account:
+        print("[ERROR] No available accounts. All accounts have reached daily limit.")
+        return
+
+    print(f"[Account] Using: {account['email']}")
+    current_email = account['email']
+    current_password = account['password']
+    account_row = account['row']
+
     drive_service = None
     if DRIVE_FOLDER_ID:
         try:
@@ -1338,9 +1405,12 @@ def main():
         page    = context.new_page()
 
         try:
-            login(page)
+            login(page, current_email, current_password)
+            print("[Login] ✓ Account login successful")
         except Exception as e:
-            print(f"[FATAL] Login failed: {e}")
+            print(f"[FATAL] Login failed for {current_email}: {e}")
+            # Mark account as cooldown on failure
+            update_account_success(sheet_service, SPREADSHEET_ID, account_row, False)
             browser.close()
             return
 
