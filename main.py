@@ -1,7 +1,7 @@
 """
 MagicLight Auto — Kids Story Video Generator
 =============================================
-Version : 2.1.0
+Version : 2.2.0  [FINAL]
 Released: 2026-04-04
 Repo    : https://github.com/net2t/VideoProcessor
 
@@ -11,26 +11,35 @@ Output      : output/row{N}_{title}/  (.mp4 + _thumb.jpg)
 Usage:
     python main.py              # Process all Pending rows
     python main.py --max 2      # Process max 2 stories
-    python main.py --headless   # No browser window
+    python main.py --headless   # Run browser headless
 
 Credentials (.env):
     EMAIL=your@email.com
     PASSWORD=yourpassword
-    SHEET_ID=1MPfnJ2UajI-eKKqGS4y6eb3BEgXpJiZ44nr556cfXRE
+    SHEET_ID=<google-sheet-id>
     SHEET_NAME=Database
+    CREDS_JSON=credentials.json
 
-Google Sheets (credentials.json in project root):
-    Service account JSON — share the sheet with the service account email.
+Observed Timings (stable internet, 1 story):
+    Login      : ~15s
+    Step 1     : ~45s  (AI script generation)
+    Step 2     : ~37s  (Cast / Animate All)
+    Step 3     : ~10s  (Storyboard → Next)
+    Step 4 nav : ~72s  (Navigate to Generate, ~9 Next clicks)
+    Render     : ~70s  (0% → 100%)
+    Download   : ~40s  (Thumbnail + Video ~11MB)
+    TOTAL      : ~5–15 min depending on server load
 
 Status values written to Sheet:
     Processing  — currently running
-    Done        — video downloaded successfully
+    Done        — video + thumbnail downloaded
     No_Video    — render done but video download failed
     Low Credit  — account ran out of credits, stopped
     Error       — unexpected failure
 """
 
-__version__ = "2.1.0"
+
+__version__ = "2.2.0"
 
 import re
 import os
@@ -41,6 +50,13 @@ import warnings
 import argparse
 import requests
 from datetime import datetime
+
+# Force UTF-8 output on Windows to avoid cp1252 errors
+if sys.platform == "win32":
+    import io
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
+    os.environ["PYTHONIOENCODING"] = "utf-8"
 
 # Suppress noisy warnings
 warnings.filterwarnings("ignore")
@@ -54,12 +70,12 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.rule import Rule
 
-console = Console(highlight=False)
+console = Console(highlight=False, emoji=False)
 
 def _step(label): console.print(f"\n[bold cyan]{label}[/bold cyan]")
-def _ok(msg):     console.print(f"  [bold green]✓[/bold green] {msg}")
-def _warn(msg):   console.print(f"  [bold yellow]⚠[/bold yellow]  {msg}")
-def _err(msg):    console.print(f"  [bold red]✗[/bold red] {msg}")
+def _ok(msg):     console.print(f"  [bold green]OK[/bold green] {msg}")
+def _warn(msg):   console.print(f"  [bold yellow]!![/bold yellow]  {msg}")
+def _err(msg):    console.print(f"  [bold red]XX[/bold red] {msg}")
 def _info(msg):   console.print(f"  [dim]{msg}[/dim]")
 
 # ── Config ─────────────────────────────────────────────────────────────────────
