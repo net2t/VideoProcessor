@@ -3,6 +3,13 @@
 credentials.json
 auth.json
 token.json
+cookies.json
+oauth_credentials.json
+Temp-Folder/.env
+Temp-Folder/credentials*.json
+Temp-Folder/oauth_credentials.json
+Temp-Folder/token.json
+Temp-Folder/cookies.json
 
 # Python
 __pycache__/
@@ -19,6 +26,12 @@ downloads/
 *.mkv
 *.avi
 *.webm
+
+# Temp-Folder artifacts
+Temp-Folder/downloads/
+Temp-Folder/debug_screenshot_*.png
+Temp-Folder/__pycache__/
+Temp-Folder/Youtube/
 
 # Backup files
 *.backup
