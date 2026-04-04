@@ -46,13 +46,24 @@ STEP3_WAIT=180
 STEP4_RENDER_TIMEOUT=1200
 ```
 
-### 3. Google Services Authentication
+### 3. Google Services Authentication (Sheets & Drive)
+You only need **ONE** master `credentials.json` file for both Sheets and Drive:
 1. Go to the [Google Cloud Console](https://console.cloud.google.com/) and enable the **Google Drive API** and **Google Sheets API**.
 2. Create a "Service Account" and download the private key as a JSON file. Rename it to `credentials.json` and place it in the same root folder as `main.py`.
-3. Give that specific Service Account email address **Editor** permissions to your Google Sheet.
-4. *For Drive Upload*: Give that specific Service Account email address **Editor** permissions to your Google Drive folder where you want to upload videos.
+3. Share your particular Google Sheet with that Service Account email address as an **Editor**.
+4. *For Drive Upload*: Share the Google Drive destination folder with that exact same Service Account email as an **Editor**.
 
-### 4. Google Sheets Layout
+### 4. Running via GitHub Actions (Cloud Automation)
+This repository contains a pre-configured `.github/workflows/generate.yml` that lets you run the generation natively in the cloud!
+1. Go to your GitHub Repository -> Settings -> Secrets and variables -> Actions.
+2. Add the following **Repository Secrets**:
+   - `EMAIL`, `PASSWORD`
+   - `SHEET_ID`, `SHEET_NAME`
+   - `DRIVE_FOLDER_ID`
+   - `CREDS_JSON_B64`: Base64 encode your `credentials.json` and paste the string here.
+3. Once set, go to the **Actions** tab on Github, click **MagicLight Video Generator**, click **Run workflow**, set your limits, and press Run!
+
+### 5. Google Sheets Layout
 Your Google sheet (default name: "Database") **MUST** exactly contain these headers:
 - `Status` (Set new rows to "Pending", will change to "Processing", "Done", "No_Video", "Low Credit", or "Error")
 - `Title` (Col C - 3rd column)

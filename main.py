@@ -1358,13 +1358,14 @@ def _make_safe(row_num, title):
     return s.strip("_")
 
 def parse_args():
-    p = argparse.ArgumentParser(description="MagicLight Auto — Kids Story Generator v2.1")
-    p.add_argument("--max",      type=int, default=0,  help="Max stories to process (0=all)")
+    p = argparse.ArgumentParser(description="MagicLight Auto — Kids Story Generator v3.0")
+    p.add_argument("--max",      type=int, default=-1,  help="Max stories to process (0=all)")
     p.add_argument("--headless", action="store_true",   help="Run browser headless")
+    p.add_argument("--upload-drive", action="store_true", help="Force Google Drive upload mode")
     return p.parse_args()
 
 def main():
-    global _browser
+    global _browser, DRIVE_FOLDER_ID
     args = parse_args()
 
     console.print(Panel.fit(
@@ -1392,17 +1393,25 @@ def main():
     if not pending:
         _warn("No 'Pending' rows found in Sheet."); return
 
-    # Interactive menu
-    if len(sys.argv) == 1:
-        ans = console.input("\n[bold cyan]?[/bold cyan] Enter limit of stories to process (0 for unlimited): ").strip()
-        if ans.isdigit():
-            args.max = int(ans)
-        
-        global DRIVE_FOLDER_ID
-        if not DRIVE_FOLDER_ID:
-            up_drive = console.input("[bold cyan]?[/bold cyan] Upload to Google Drive? (Y/N): ").strip().upper()
-            if up_drive == 'Y':
-                DRIVE_FOLDER_ID = console.input("  [bold cyan]>[/bold cyan] Enter Google Drive Folder ID: ").strip()
+    # Interactive menu if not running in CI and max is unset
+    is_ci = os.getenv("GITHUB_ACTIONS") == "true" or not sys.stdout.isatty()
+    
+    if args.max == -1:
+        if is_ci:
+            args.max = 0 # Default to all in CI if unspecified
+        else:
+            ans = console.input("\n[bold cyan]?[/bold cyan] Enter limit of stories to process (0 for unlimited): ").strip()
+            args.max = int(ans) if ans.isdigit() else 0
+            
+            if not DRIVE_FOLDER_ID and not args.upload_drive:
+                up_drive = console.input("[bold cyan]?[/bold cyan] Upload to Google Drive? (Y/N): ").strip().upper()
+                if up_drive == 'Y':
+                    DRIVE_FOLDER_ID = console.input("  [bold cyan]>[/bold cyan] Enter Google Drive Folder ID: ").strip()
+
+    # If --upload-drive was passed directly and no .env was set, we assume they want Drive 
+    # but the workflow must inject it via Environment Variable secrets.
+    if args.upload_drive and not DRIVE_FOLDER_ID:
+        _warn("Drive upload requested via CLI but DRIVE_FOLDER_ID is empty in env!")
 
     limit   = args.max if args.max > 0 else len(pending)
     pending = pending[:limit]
