@@ -179,9 +179,37 @@ def process_video(input_file: Path, output_file: Path, profile: str, trim_second
     console.print(f"[cyan]Processing: {input_file.name}[/cyan]")
     args = get_ffmpeg_args(input_file, output_file, profile, trim_seconds, logo_path, logo_x, logo_y, logo_width, logo_opacity, endscreen, endscreen_video)
     try:
-        subprocess.run(args, check=True, capture_output=True)
-        console.print(f"[green]✔ Finished: {output_file.name}[/green]")
-    except subprocess.CalledProcessError as e:
+        # Run FFmpeg with progress parsing
+        process = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, universal_newlines=True)
+        duration = None
+        with Progress(SpinnerColumn(), TextColumn("[progress.description]{task.description}"), BarColumn(), TextColumn("[progress.percentage]{task.percentage:>3.0f}%"), TimeElapsedColumn(), console=console) as progress:
+            task = progress.add_task(f"[cyan]Converting {input_file.name}", total=100)
+            for line in process.stdout:
+                # Parse FFmpeg progress: "frame=  123 fps= 45 q=28.0 size=    1024kB time=00:00:04.12 bitrate= 123.4kbits/s"
+                if "time=" in line and "fps=" in line:
+                    try:
+                        time_part = line.split("time=")[1].split()[0]
+                        # Parse HH:MM:SS.ms
+                        h, m, s = time_part.split(":")
+                        current_seconds = int(h) * 3600 + int(m) * 60 + float(s)
+                        if duration is None:
+                            # Get total duration once
+                            try:
+                                result = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", str(input_file)], capture_output=True, text=True, check=True)
+                                duration = float(result.stdout.strip())
+                            except Exception:
+                                duration = 1.0
+                        if duration > 0:
+                            percent = min(100, int((current_seconds / duration) * 100))
+                            progress.update(task, advance=percent - progress.tasks[task].completed)
+                    except Exception:
+                        pass
+        returncode = process.wait()
+        if returncode == 0:
+            console.print(f"[green]✔ Finished: {output_file.name}[/green]")
+        else:
+            console.print(f"[red]✖ FFmpeg failed for {input_file.name} (code {returncode})[/red]")
+    except Exception as e:
         console.print(f"[red]✖ Failed to process {input_file.name}: {e}[/red]")
 
 # ── Main TUI menu ───────────────────────────────────────────────────────────────
