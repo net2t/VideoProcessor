@@ -1380,9 +1380,16 @@ def main():
         for rec_idx, row in pending:
             if _shutdown: break
 
-            story = str(row.get("Story", "")).strip()
+            vals = list(row.values())
+            # Col D (idx 3), Col E (idx 4), Col F (idx 5)
+            col_d = str(vals[3]).strip() if len(vals) > 3 else ""
+            col_e = str(vals[4]).strip() if len(vals) > 4 else ""
+            col_f = str(vals[5]).strip() if len(vals) > 5 else ""
+            
+            story = f"{col_d}\n\n{col_e}\n\n{col_f}".strip()
+            
             if not story:
-                _warn(f"Row {rec_idx+2}: empty Story — skipping"); continue
+                _warn(f"Row {rec_idx+2}: empty Story (Cols D,E,F) — skipping"); continue
 
             title   = str(row.get("Title", f"Row{rec_idx+2}")).strip() or f"Row{rec_idx+2}"
             row_num = rec_idx + 2          # sheet row (1=header, 2=first data)
